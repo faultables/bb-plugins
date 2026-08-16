@@ -38,4 +38,4 @@ No automated test runner yet. Before a PR, typecheck (`tsc` / `bb plugin types -
 
 ## Commit & Pull Request Guidelines
 
-Commits are imperative and scoped, e.g. `Add bb plugins monorepo with App Store Connect plugin`. PRs should say which plugin changed, how you verified it in BB, and note any `package.json` / engines / SDK pin updates. Do not commit App Store Connect credentials or built `dist/` unless a publish path explicitly requires artifacts.
+Commits follow Conventional Commits, e.g. `feat: add TestFlight test settings management`. Types: `feat`, `fix`, `docs`, `refactor`, `chore`, `test`. PRs should say which plugin changed, how you verified it in BB, and note any `package.json` / engines / SDK pin updates. Do not commit App Store Connect credentials or built `dist/` unless a publish path explicitly requires artifacts.

@@ -282,13 +282,13 @@ export default async function plugin(bb: BbPluginApi) {
   let backoffUntil = 0;
   let proxyServer: HttpServer | null = null;
   let proxyPort: number | null = null;
-  let proxyBindHost: string | null = null;
 
   // baguette sends `Content-Security-Policy: frame-ancestors 'none'`, which
   // blocks embedding its pages in an iframe. Serve it through a reverse proxy
   // that strips that header (and X-Frame-Options) and tunnels the stream's
-  // WebSocket upgrade to baguette. The proxy binds the hostname setting's
-  // host (loopback-style); external access goes through the Cloudflare tunnel.
+  // WebSocket upgrade to baguette. The proxy is a loopback service: the
+  // Cloudflare tunnel ingress targets 127.0.0.1, and the frontend reaches it
+  // through the tunnel's HTTPS hostname (viewUrl).
   const targetOriginFor = async (): Promise<string> => {
     const { hostname } = await settings.get();
     return normalizeBaseUrl(hostname);
@@ -382,15 +382,6 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const ensureProxy = async (): Promise<void> => {
-    const { hostname } = await settings.get();
-    const bindHost = extractHost(hostname);
-
-    // The configured host changed — close the old listener and rebind.
-    if (proxyServer !== null && proxyBindHost !== bindHost) {
-      proxyServer.close();
-      proxyServer = null;
-      proxyPort = null;
-    }
     if (proxyServer !== null) return;
 
     const listen = (server: HttpServer, port: number): Promise<number> =>
@@ -409,7 +400,7 @@ export default async function plugin(bb: BbPluginApi) {
         };
         server.once("error", onError);
         server.once("listening", onListening);
-        server.listen(port, bindHost);
+        server.listen(port, "127.0.0.1");
       });
 
     // Prefer the previously bound port so the frontend's cached view URL stays
@@ -425,9 +416,8 @@ export default async function plugin(bb: BbPluginApi) {
         const bound = await listen(server, candidate);
         proxyServer = server;
         proxyPort = bound;
-        proxyBindHost = bindHost;
         await bb.storage.kv.set(PROXY_PORT_KEY, { port: bound });
-        bb.log.info(`baguette proxy listening on ${bindHost}:${bound}`);
+        bb.log.info(`baguette proxy listening on 127.0.0.1:${bound}`);
         return;
       } catch {
         // EADDRINUSE (or bind failure) — drop this server, try the next.
@@ -612,7 +602,7 @@ export default async function plugin(bb: BbPluginApi) {
         stopped: manualStop?.port === port,
         pid: owned,
         viewBaseUrl:
-          proxyPort !== null ? `http://${extractHost(hostname)}:${proxyPort}` : null,
+          proxyPort !== null ? `http://127.0.0.1:${proxyPort}` : null,
         error: baguetteError,
       };
     },
@@ -684,7 +674,6 @@ export default async function plugin(bb: BbPluginApi) {
       proxyServer.close();
       proxyServer = null;
       proxyPort = null;
-      proxyBindHost = null;
     }
   });
 }

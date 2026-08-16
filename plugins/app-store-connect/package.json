@@ -10,7 +10,7 @@
     "name": "App Store Connect",
     "description": "List and browse your App Store Connect apps.",
     "branding": {
-      "icon": "Smartphone"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

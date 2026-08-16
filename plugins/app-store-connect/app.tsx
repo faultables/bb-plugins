@@ -41,14 +41,19 @@ function AppIcon({ app, size = 40 }: { app: App; size?: number }) {
 type Build = {
   id: string;
   buildNumber: string;
-  uploadedDate?: string;
-  expirationDate?: string;
-  processingState?: string;
-  minOsVersion?: string;
-  internalBuildState?: string;
-  externalBuildState?: string;
+  uploadedDate: string | null;
+  expirationDate: string | null;
+  processingState: string | null;
+  minOsVersion: string | null;
+  internalBuildState: string | null;
+  externalBuildState: string | null;
   statusLabel: string;
   testingGroups: string[];
+};
+
+type ManagedBuild = {
+  build: Build;
+  version: string;
 };
 
 type Version = {
@@ -66,7 +71,20 @@ type Group = {
   versions: Version[];
 };
 
-function formatDate(value?: string) {
+type TestNote = {
+  id: string;
+  locale: string;
+  whatsNew: string;
+};
+
+type BuildGroup = {
+  id: string;
+  name: string;
+  isInternalGroup: boolean;
+  hasAccessToAllBuilds: boolean;
+};
+
+function formatDate(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
   return isNaN(date.getTime())
@@ -117,16 +135,298 @@ function StatusPill({ label }: { label: string }) {
   );
 }
 
+function BuildTestSettings({
+  appId,
+  build,
+  version,
+  defaultLocale,
+  onClose,
+}: {
+  appId: string;
+  build: Build;
+  version: string;
+  defaultLocale?: string;
+  onClose?: () => void;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [testNotes, setTestNotes] = useState<TestNote[]>([]);
+  const [groups, setGroups] = useState<BuildGroup[]>([]);
+  const [assignedGroupIds, setAssignedGroupIds] = useState<string[]>([]);
+  const [locale, setLocale] = useState(defaultLocale || "en-US");
+  const [whatsNew, setWhatsNew] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [savingGroups, setSavingGroups] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    setSaved(null);
+    try {
+      const result = await rpc.call("getBuildTestSettings", {
+        appId,
+        buildId: build.id,
+      });
+      setTestNotes(result.testNotes);
+      setGroups(result.groups);
+      setAssignedGroupIds(result.assignedGroupIds);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      const nextLocale =
+        result.testNotes.find((note) => note.locale === locale)?.locale ??
+        result.testNotes[0]?.locale ??
+        defaultLocale ??
+        "en-US";
+      setLocale(nextLocale);
+      setWhatsNew(
+        result.testNotes.find((note) => note.locale === nextLocale)?.whatsNew ??
+          "",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [appId, build.id]);
+
+  const locales = [
+    ...new Set(
+      [defaultLocale, ...testNotes.map((note) => note.locale)].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  ];
+
+  function changeLocale(nextLocale: string) {
+    setLocale(nextLocale);
+    setWhatsNew(
+      testNotes.find((note) => note.locale === nextLocale)?.whatsNew ?? "",
+    );
+    setSaved(null);
+  }
+
+  async function saveNotes() {
+    setSavingNotes(true);
+    setError(null);
+    setSaved(null);
+    try {
+      const result = await rpc.call("setBuildTestNotes", {
+        buildId: build.id,
+        locale,
+        whatsNew,
+      });
+      setTestNotes(result.testNotes);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        setSaved("Test details saved");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingNotes(false);
+    }
+  }
+
+  async function saveGroups() {
+    setSavingGroups(true);
+    setError(null);
+    setSaved(null);
+    try {
+      const result = await rpc.call("setBuildGroups", {
+        appId,
+        buildId: build.id,
+        groupIds: assignedGroupIds,
+      });
+      setGroups(result.groups);
+      setAssignedGroupIds(result.assignedGroupIds);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        setSaved("Build groups saved");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingGroups(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">TestFlight settings</p>
+          <p className="text-xs text-muted-foreground">
+            Version {version} · Build {build.buildNumber}
+          </p>
+        </div>
+        {onClose && (
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Hide
+          </Button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+          <Spinner />
+          Loading test details…
+        </div>
+      )}
+
+      {!loading && (
+        <div className="mt-3 space-y-4">
+          {error && (
+            <div className="rounded-md border border-border bg-muted/40 p-2 text-xs text-destructive">
+              {error}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-1 h-6 px-1"
+                onClick={() => void load()}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+
+          {!error && (
+            <>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor={`test-locale-${build.id}`}
+                    className="text-xs font-medium"
+                  >
+                    Test details
+                  </label>
+                  <select
+                    id={`test-locale-${build.id}`}
+                    value={locale}
+                    onChange={(event) => changeLocale(event.target.value)}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                  >
+                    {locales.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                    {locales.length === 0 && <option value={locale}>{locale}</option>}
+                  </select>
+                </div>
+                <textarea
+                  value={whatsNew}
+                  maxLength={4000}
+                  onChange={(event) => {
+                    setWhatsNew(event.target.value);
+                    setSaved(null);
+                  }}
+                  placeholder="What should testers focus on?"
+                  rows={4}
+                  className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    What to Test · {whatsNew.length}/4000
+                  </span>
+                  <Button
+                    size="sm"
+                    disabled={savingNotes || !locale}
+                    onClick={() => void saveNotes()}
+                  >
+                    {savingNotes ? <Spinner /> : "Save details"}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div>
+                  <p className="text-xs font-medium">Build groups</p>
+                </div>
+                {groups.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No TestFlight groups found for this app.
+                  </p>
+                ) : (
+                  <div className="space-y-1 rounded-md border border-border p-2">
+                    {groups.map((group) => {
+                      const checked = assignedGroupIds.includes(group.id);
+                      return (
+                        <label
+                          key={group.id}
+                          className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted/50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={group.hasAccessToAllBuilds}
+                            onChange={() =>
+                              setAssignedGroupIds((current) =>
+                                checked
+                                  ? current.filter((id) => id !== group.id)
+                                  : [...current, group.id],
+                              )
+                            }
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {group.name}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">
+                            {group.hasAccessToAllBuilds
+                              ? "All builds"
+                              : group.isInternalGroup
+                                ? "Internal"
+                                : "External"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={savingGroups || groups.length === 0}
+                  onClick={() => void saveGroups()}
+                >
+                  {savingGroups ? <Spinner /> : "Save groups"}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {saved && (
+            <p className="text-xs text-emerald-500" role="status">
+              {saved}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BuildsRow({
   build,
   hasMore,
   onSeeMore,
   loadingMore,
+  onManage,
 }: {
   build: Build;
   hasMore: boolean;
-  onSeeMore: () => void;
+  onSeeMore?: () => void;
   loadingMore: boolean;
+  onManage: () => void;
 }) {
   const testing = build.testingGroups;
   return (
@@ -144,6 +444,14 @@ function BuildsRow({
             {build.processingState}
           </span>
         )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-7 px-2 text-xs"
+          onClick={onManage}
+        >
+          Test details
+        </Button>
       </div>
       <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>min OS {build.minOsVersion ?? "—"}</span>
@@ -177,12 +485,14 @@ function VersionSection({
   onToggle,
   onSeeMoreBuilds,
   loadingMore,
+  onManageBuild,
 }: {
   version: Version;
   expanded: boolean;
   onToggle: () => void;
   onSeeMoreBuilds: () => void;
   loadingMore: boolean;
+  onManageBuild: (build: Build, version: string) => void;
 }) {
   const lastBuildId = version.builds[version.builds.length - 1]?.id;
   return (
@@ -220,6 +530,7 @@ function VersionSection({
               hasMore={version.hasMoreBuilds}
               onSeeMore={build.id === lastBuildId ? onSeeMoreBuilds : undefined}
               loadingMore={loadingMore}
+              onManage={() => onManageBuild(build, version.version)}
             />
           ))}
         </ul>
@@ -237,6 +548,7 @@ function AppBuilds({ app, onBack }: { app: App; onBack: () => void }) {
   const [loadingMoreVersion, setLoadingMoreVersion] = useState<string | null>(null);
   const [loadingMoreVersions, setLoadingMoreVersions] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [managedBuild, setManagedBuild] = useState<ManagedBuild | null>(null);
 
   async function load(limit: number) {
     setLoading(true);
@@ -320,6 +632,18 @@ function AppBuilds({ app, onBack }: { app: App; onBack: () => void }) {
         </div>
         <p className="text-sm text-muted-foreground">{app.bundleId}</p>
 
+        {managedBuild && (
+          <div className="mt-4">
+            <BuildTestSettings
+              appId={app.id}
+              build={managedBuild.build}
+              version={managedBuild.version}
+              defaultLocale={app.primaryLocale}
+              onClose={() => setManagedBuild(null)}
+            />
+          </div>
+        )}
+
         {loading && <LoadingState />}
 
         {!loading && error && (
@@ -371,6 +695,9 @@ function AppBuilds({ app, onBack }: { app: App; onBack: () => void }) {
                         }
                         onSeeMoreBuilds={() => void seeMoreBuilds(version)}
                         loadingMore={loadingMoreVersion === version.id}
+                        onManageBuild={(build, version) =>
+                          setManagedBuild({ build, version })
+                        }
                       />
                     );
                   })}
@@ -428,7 +755,7 @@ function AppsPanel() {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl p-4 md:p-5">
         <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold">My Apps</h1>
+          <h1 className="text-lg font-semibold">App Store Connect</h1>
           <Button size="sm" variant="outline" onClick={() => void load()}>
             Refresh
           </Button>
@@ -480,10 +807,17 @@ function AppsPanel() {
   );
 }
 
-function CompactOverview({ appId }: { appId: string }) {
+function CompactOverview({
+  appId,
+  defaultLocale,
+}: {
+  appId: string;
+  defaultLocale?: string;
+}) {
   const rpc = useRpc<typeof rpcContract>();
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
+  const [managedBuild, setManagedBuild] = useState<ManagedBuild | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -514,6 +848,15 @@ function CompactOverview({ appId }: { appId: string }) {
 
   return (
     <div className="space-y-4">
+      {managedBuild && (
+        <BuildTestSettings
+          appId={appId}
+          build={managedBuild.build}
+          version={managedBuild.version}
+          defaultLocale={defaultLocale}
+          onClose={() => setManagedBuild(null)}
+        />
+      )}
       {groups.map((group) => (
         <div key={group.platform}>
           <p className="mb-1 text-sm font-semibold">{group.label}</p>
@@ -533,16 +876,27 @@ function CompactOverview({ appId }: { appId: string }) {
                   <span className="text-sm font-medium">
                     Version {version.version}
                   </span>
-                  {version.testing && (
-                    <span className="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-500">
-                      Testing
-                    </span>
-                  )}
                   {latest && <StatusPill label={latest.statusLabel} />}
                   {latest && (
                     <span className="ml-auto text-xs text-muted-foreground">
                       Build {latest.buildNumber}
                     </span>
+                  )}
+                  {latest && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-base"
+                      aria-label="Manage TestFlight settings"
+                      onClick={() =>
+                        setManagedBuild({
+                          build: latest,
+                          version: version.version,
+                        })
+                      }
+                    >
+                      <span aria-hidden>→</span>
+                    </Button>
                   )}
                 </li>
               );
@@ -556,168 +910,86 @@ function CompactOverview({ appId }: { appId: string }) {
 
 function ProjectAppPanel() {
   const rpc = useRpc<typeof rpcContract>();
-  const { projectId: contextProjectId } = useBbContext();
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
-  const [projectId, setProjectId] = useState<string | null>(contextProjectId);
+  const { projectId } = useBbContext();
   const [app, setApp] = useState<App | null>(null);
-  const [apps, setApps] = useState<App[]>([]);
   const [loading, setLoading] = useState(true);
-  const [picking, setPicking] = useState(false);
-  const [selectedAppId, setSelectedAppId] = useState("");
 
   useEffect(() => {
-    void (async () => {
-      const r = await rpc.call("listProjects");
-      setProjects(r.projects);
-      if (r.projects.length > 0 && !r.projects.some((p) => p.id === projectId)) {
-        setProjectId(r.projects[0].id);
-      }
-    })();
-  }, []);
-
-  async function load() {
-    if (!projectId) return;
-    setLoading(true);
-    const r = await rpc.call("getProjectApp", { projectId });
-    setApp(r.app);
-    setLoading(false);
-  }
-
-  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!projectId) return;
+      setLoading(true);
+      const r = await rpc.call("getProjectApp", { projectId });
+      if (cancelled) return;
+      setApp(r.app);
+      setLoading(false);
+    }
     void load();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
-  function onProjectChange(next: string) {
-    setProjectId(next);
-    setPicking(false);
-    setSelectedAppId("");
+  if (!projectId) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+        Open a project to see its App Store Connect app.
+      </div>
+    );
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">
-          Project
-        </label>
-        <select
-          value={projectId ?? ""}
-          onChange={(e) => onProjectChange(e.target.value)}
-          className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm"
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+  if (loading) {
+    return (
+      <div className="flex justify-center py-6">
+        <Spinner className="size-5 text-muted-foreground" />
       </div>
+    );
+  }
 
-      {loading && (
-        <div className="flex justify-center py-6">
-          <Spinner className="size-5 text-muted-foreground" />
-        </div>
-      )}
-
-      {!loading && app && (
-        <div className="space-y-4">
+  if (app) {
+    return (
+      <div className="space-y-4">
+        <section className="rounded-lg border border-border bg-card p-3">
           <div className="flex items-start gap-3">
             <AppIcon app={app} size={44} />
             <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">{app.name}</p>
+              <div className="flex items-center gap-2">
+                <p className="truncate font-medium">{app.name}</p>
+                <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-500">
+                  Active
+                </span>
+              </div>
               <p className="truncate text-sm text-muted-foreground">
-                {app.bundleId}
-                {app.primaryLocale ? ` · ${app.primaryLocale}` : ""}
+                {app.bundleId ?? "No bundle ID"}
               </p>
             </div>
           </div>
-          <CompactOverview appId={app.id} />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={async () => {
-                setPicking(true);
-                setSelectedAppId("");
-                const r = await rpc.call("listApps");
-                setApps(r.apps);
-              }}
-            >
-              Change app
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={async () => {
-                if (projectId) {
-                  await rpc.call("setProjectApp", { projectId, appId: "" });
-                }
-                setApp(null);
-              }}
-            >
-              Remove
-            </Button>
-          </div>
-        </div>
-      )}
 
-      {!loading && !app && picking && (
-        <div className="space-y-3">
-          <p className="text-sm font-medium">
-            Associate an App Store Connect app
-          </p>
-          <select
-            value={selectedAppId}
-            onChange={(e) => setSelectedAppId(e.target.value)}
-            className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm"
-          >
-            <option value="">Select an app…</option>
-            {apps.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} ({a.bundleId})
-              </option>
-            ))}
-          </select>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={!selectedAppId || !projectId}
-              onClick={async () => {
-                if (!selectedAppId || !projectId) return;
-                await rpc.call("setProjectApp", {
-                  projectId,
-                  appId: selectedAppId,
-                });
-                setPicking(false);
-                await load();
-              }}
-            >
-              Associate
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setPicking(false)}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
+          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+            <div className="min-w-0">
+              <dt className="text-muted-foreground">App ID</dt>
+              <dd className="mt-0.5 break-all font-mono">{app.id}</dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-muted-foreground">SKU</dt>
+              <dd className="mt-0.5 break-all font-mono">{app.sku ?? "—"}</dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-muted-foreground">Primary locale</dt>
+              <dd className="mt-0.5">{app.primaryLocale ?? "—"}</dd>
+            </div>
+          </dl>
+        </section>
+        <CompactOverview appId={app.id} defaultLocale={app.primaryLocale} />
+      </div>
+    );
+  }
 
-      {!loading && !app && !picking && (
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">
-            No App Store Connect app linked to this project.
-          </p>
-          <Button
-            size="sm"
-            onClick={async () => {
-              setPicking(true);
-              setSelectedAppId("");
-              const r = await rpc.call("listApps");
-              setApps(r.apps);
-            }}
-          >
-            Link an app
-          </Button>
-        </div>
-      )}
+  return (
+    <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+      No <code className="rounded bg-muted px-1">.bb/asc</code> file found for
+      this project. Add one at the project root with your app&apos;s bundle id
+      (e.g. <code className="rounded bg-muted px-1">com.penerbangwalet.flo</code>).
     </div>
   );
 }
@@ -725,8 +997,8 @@ function ProjectAppPanel() {
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "apps",
-    title: "My Apps",
-    icon: "Smartphone",
+    title: "App Store Connect",
+    icon: "AppStoreIcon",
     path: "apps",
     component: AppsPanel,
   });

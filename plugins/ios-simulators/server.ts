@@ -4,7 +4,7 @@
 // running/available) and `POST /simulators/<udid>/<action>` (boot/shutdown).
 // All requests proxy through this backend so the panel never hits CORS, and
 // the server hostname is a declarative setting. A watchdog service starts
-// `baguette serve --host 0.0.0.0 --port <port>` when it is not running.
+// `baguette serve --host <hostname host> --port <port>` when it is not running.
 //
 // Ownership of a spawned baguette is persisted by PID (KV) so it survives
 // plugin reloads/server restarts: a spawned process that outlived its parent
@@ -170,8 +170,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isHealthy(port: number): Promise<boolean> {
-  return fetchWithTimeout(`http://127.0.0.1:${port}/simulators.json`, {
+function isHealthy(host: string, port: number): Promise<boolean> {
+  return fetchWithTimeout(`http://${host}:${port}/simulators.json`, {
     headers: { accept: "application/json" },
     method: "GET",
   }, 2000)
@@ -265,7 +265,7 @@ export default async function plugin(bb: BbPluginApi) {
     autoStart: {
       type: "boolean",
       label: "Start baguette automatically",
-      description: "Run `baguette serve --host 0.0.0.0` when it is not running.",
+      description: "Run `baguette serve --host <hostname>` when it is not running.",
       default: true,
     },
     viewUrl: {
@@ -282,14 +282,14 @@ export default async function plugin(bb: BbPluginApi) {
   let backoffUntil = 0;
   let proxyServer: HttpServer | null = null;
   let proxyPort: number | null = null;
+  let proxyBindHost: string | null = null;
 
   // baguette sends `Content-Security-Policy: frame-ancestors 'none'`, which
   // blocks embedding its pages in an iframe. Serve it through a reverse proxy
   // that strips that header (and X-Frame-Options) and tunnels the stream's
-  // WebSocket upgrade to baguette. The proxy binds 0.0.0.0 so browsers that
-  // reach bb over the network (not just loopback) can load the iframe.
-  const targetOriginFor = async (port: number): Promise<string> => {
-    if ((await ownedPid()) !== null) return `http://127.0.0.1:${port}`;
+  // WebSocket upgrade to baguette. The proxy binds the hostname setting's
+  // host (loopback-style); external access goes through the Cloudflare tunnel.
+  const targetOriginFor = async (): Promise<string> => {
     const { hostname } = await settings.get();
     return normalizeBaseUrl(hostname);
   };
@@ -309,8 +309,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const proxyRequest = async (req: IncomingMessage, res: ServerResponse) => {
     try {
-      const { hostname } = await settings.get();
-      const origin = await targetOriginFor(extractPort(hostname));
+      const origin = await targetOriginFor();
       const target = new URL(origin + (req.url ?? "/"));
       const transport =
         target.protocol === "https:" ? httpsRequest : httpRequest;
@@ -352,8 +351,7 @@ export default async function plugin(bb: BbPluginApi) {
   const proxyUpgrade = (req: IncomingMessage, socket: any, head: Buffer) => {
     void (async () => {
       try {
-        const { hostname } = await settings.get();
-        const origin = await targetOriginFor(extractPort(hostname));
+        const origin = await targetOriginFor();
         const target = new URL(origin + (req.url ?? "/"));
         const proxySocket = netConnect({
           host: target.hostname,
@@ -384,6 +382,15 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const ensureProxy = async (): Promise<void> => {
+    const { hostname } = await settings.get();
+    const bindHost = extractHost(hostname);
+
+    // The configured host changed — close the old listener and rebind.
+    if (proxyServer !== null && proxyBindHost !== bindHost) {
+      proxyServer.close();
+      proxyServer = null;
+      proxyPort = null;
+    }
     if (proxyServer !== null) return;
 
     const listen = (server: HttpServer, port: number): Promise<number> =>
@@ -402,7 +409,7 @@ export default async function plugin(bb: BbPluginApi) {
         };
         server.once("error", onError);
         server.once("listening", onListening);
-        server.listen(port, "0.0.0.0");
+        server.listen(port, bindHost);
       });
 
     // Prefer the previously bound port so the frontend's cached view URL stays
@@ -418,8 +425,9 @@ export default async function plugin(bb: BbPluginApi) {
         const bound = await listen(server, candidate);
         proxyServer = server;
         proxyPort = bound;
+        proxyBindHost = bindHost;
         await bb.storage.kv.set(PROXY_PORT_KEY, { port: bound });
-        bb.log.info(`baguette proxy listening on 0.0.0.0:${bound}`);
+        bb.log.info(`baguette proxy listening on ${bindHost}:${bound}`);
         return;
       } catch {
         // EADDRINUSE (or bind failure) — drop this server, try the next.
@@ -451,14 +459,14 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.storage.kv.delete(OWNER_KEY);
   };
 
-  const spawnBaguette = async (port: number): Promise<string | null> => {
+  const spawnBaguette = async (port: number, host: string): Promise<string | null> => {
     if (baguette !== null) return null;
     const command = resolveBaguette();
     let child: ChildProcess;
     try {
       child = spawn(
         command,
-        ["serve", "--host", "0.0.0.0", "--port", String(port)],
+        ["serve", "--host", host, "--port", String(port)],
         { stdio: "ignore" },
       );
     } catch (error) {
@@ -500,7 +508,8 @@ export default async function plugin(bb: BbPluginApi) {
       while (!signal.aborted) {
         const { hostname, autoStart } = await settings.get();
         const port = extractPort(hostname);
-        const healthy = await isHealthy(port);
+        const bindHost = extractHost(hostname);
+        const healthy = await isHealthy(bindHost, port);
         const manualStop = await bb.storage.kv.get<{ port: number }>(MANUAL_STOP_KEY);
 
         if (healthy) {
@@ -513,7 +522,7 @@ export default async function plugin(bb: BbPluginApi) {
           const now = Date.now();
           const suppressAutoStart = manualStop?.port === port;
           if (autoStart && !suppressAutoStart && baguette === null && now >= backoffUntil) {
-            const failed = await spawnBaguette(port);
+            const failed = await spawnBaguette(port, bindHost);
             if (failed !== null) backoffUntil = now + 60_000;
           } else {
             publishStatus(false);
@@ -593,7 +602,7 @@ export default async function plugin(bb: BbPluginApi) {
       await ensureProxy();
       const { hostname, autoStart } = await settings.get();
       const port = extractPort(hostname);
-      const running = await isHealthy(port);
+      const running = await isHealthy(extractHost(hostname), port);
       const owned = await ownedPid();
       const manualStop = await bb.storage.kv.get<{ port: number }>(MANUAL_STOP_KEY);
       return {
@@ -611,11 +620,12 @@ export default async function plugin(bb: BbPluginApi) {
     async startBaguette() {
       const { hostname } = await settings.get();
       const port = extractPort(hostname);
+      const bindHost = extractHost(hostname);
       await bb.storage.kv.delete(MANUAL_STOP_KEY);
-      if (await isHealthy(port)) {
+      if (await isHealthy(bindHost, port)) {
         return { ok: true, message: "Baguette is already running." };
       }
-      const failed = await spawnBaguette(port);
+      const failed = await spawnBaguette(port, bindHost);
       return failed === null
         ? { ok: true, message: "Starting baguette…" }
         : { ok: false, message: `Could not start baguette: ${failed}` };
@@ -674,6 +684,7 @@ export default async function plugin(bb: BbPluginApi) {
       proxyServer.close();
       proxyServer = null;
       proxyPort = null;
+      proxyBindHost = null;
     }
   });
 }

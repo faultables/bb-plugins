@@ -6,6 +6,10 @@
     {
       "name": "app-store-connect",
       "source": "./plugins/app-store-connect"
+    },
+    {
+      "name": "ios-simulators",
+      "source": "./plugins/ios-simulators"
     }
   ]
 }

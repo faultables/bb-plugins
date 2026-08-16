@@ -9,6 +9,7 @@ plugin lives under `plugins/<name>` and is registered in `.bb/plugins.json`.
 | --- | --- |
 | [iOS Simulators](./plugins/ios-simulators/) | Browse, boot, and watch iOS simulators served by [baguette](https://github.com/tddworks/baguette). |
 | [App Store Connect](./plugins/app-store-connect/) | List and browse your App Store Connect apps. |
+| [OpenCode Go](./plugins/opencode-go/) | Track your OpenCode Go usage and limits. |
 
 ## Requirements
 
@@ -69,6 +70,34 @@ Configured under **Extensions → Plugins → iOS Simulators** or via
 
 Browse App Store Connect apps and their TestFlight builds, groups, and test
 notes from a bb panel.
+
+## OpenCode Go
+
+Track your [OpenCode Go](https://opencode.ai/docs/go) subscription usage and
+limits from bb or the terminal (`bb opencode-go usage`):
+
+- **Sidebar** — the *OpenCode Go* nav panel (full detail) with a live
+  `5h / 7d / 1m` usage summary on its sidebar row.
+- **Threads** — the same panel via a thread's *Actions* menu.
+
+Each surface shows the three usage windows — rolling 5 hours, weekly, and
+monthly — as progress toward the dollar limits (defaults `$12` / `$30` /
+`$60`), the limit status, and the reset time.
+
+The API key resolves in order of: plugin setting `apiKey`, the
+`OPENCODE_GO_API_KEY` env var, then the opencode CLI auth file
+(`~/.local/share/opencode/auth.json`), so it works out of the box if you use
+OpenCode Go with the opencode CLI.
+
+### Settings
+
+Configured under **Extensions → Plugins → OpenCode Go** or via
+`bb plugin config opencode-go set <key> <value>`:
+
+- `apiKey` — OpenCode Go API key (optional when the opencode CLI auth file
+  exists).
+- `rollingLimitDollars` / `weeklyLimitDollars` / `monthlyLimitDollars` —
+  displayed dollar limits (defaults `12` / `30` / `60`).
 
 ## Development
 

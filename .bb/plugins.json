@@ -10,6 +10,10 @@
     {
       "name": "ios-simulators",
       "source": "./plugins/ios-simulators"
+    },
+    {
+      "name": "opencode-go",
+      "source": "./plugins/opencode-go"
     }
   ]
 }

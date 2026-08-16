@@ -35,18 +35,34 @@ function normalizeHttpsUrl(base: string): string {
 }
 
 // The panel branches on the tab's params: no params → the simulator list;
-// `{ udid, name }` → the live stream page for that simulator.
+// `{ udid, name, runtime }` → the live stream page for that simulator.
 function SimulatorsPanel({ params }: { params: unknown }) {
-  const target = (params ?? null) as { udid?: string; name?: string } | null;
+  const target = (params ?? null) as {
+    udid?: string;
+    name?: string;
+    runtime?: string;
+  } | null;
   if (target?.udid) {
     return (
-      <SimulatorView udid={target.udid} name={target.name ?? "Simulator"} />
+      <SimulatorView
+        udid={target.udid}
+        name={target.name ?? "Simulator"}
+        runtime={target.runtime ?? ""}
+      />
     );
   }
   return <SimulatorList />;
 }
 
-function SimulatorView({ udid, name }: { udid: string; name: string }) {
+function SimulatorView({
+  udid,
+  name,
+  runtime,
+}: {
+  udid: string;
+  name: string;
+  runtime: string;
+}) {
   const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
   const { values } = useSettings();
@@ -109,7 +125,7 @@ function SimulatorView({ udid, name }: { udid: string; name: string }) {
           Back
         </Button>
         <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {name}
+          {runtime ? `${name} (${runtime})` : name}
         </p>
         {!mustOpenTab && (
           <Button size="sm" variant="outline" onClick={() => setFrameKey((k) => k + 1)}>
@@ -121,7 +137,7 @@ function SimulatorView({ udid, name }: { udid: string; name: string }) {
           variant="outline"
           onClick={() => window.open(openUrl, "_blank", "noopener")}
         >
-          Open
+          Open in new tab
         </Button>
       </div>
       {mustOpenTab ? (
@@ -297,7 +313,11 @@ function SimulatorList() {
                   navigate.openThreadPanel({
                     actionId: "simulators",
                     title: simulator.name,
-                    params: { udid: simulator.udid, name: simulator.name },
+                    params: {
+                      udid: simulator.udid,
+                      name: simulator.name,
+                      runtime: simulator.runtime,
+                    },
                   })
                 }
               >

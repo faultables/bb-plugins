@@ -12,7 +12,6 @@ import {
 import type { rpcContract } from "./server";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 type Simulator = {
   name: string;
@@ -403,113 +402,6 @@ function SimulatorList() {
   );
 }
 
-function ConnectionSettings() {
-  const rpc = useRpc<typeof rpcContract>();
-  const { values, isLoading } = useSettings();
-  const [hostname, setHostname] = useState(
-    () => (typeof values?.hostname === "string" ? values.hostname : ""),
-  );
-  const [autoStart, setAutoStart] = useState(
-    () => (typeof values?.autoStart === "boolean" ? values.autoStart : true),
-  );
-  const [viewUrl, setViewUrl] = useState(
-    () => (typeof values?.viewUrl === "string" ? values.viewUrl : ""),
-  );
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!isLoading) {
-      if (typeof values?.hostname === "string") setHostname(values.hostname);
-      if (typeof values?.autoStart === "boolean") setAutoStart(values.autoStart);
-      if (typeof values?.viewUrl === "string") setViewUrl(values.viewUrl);
-    }
-  }, [isLoading, values?.hostname, values?.autoStart, values?.viewUrl]);
-
-  async function save(overrides?: { autoStart?: boolean }) {
-    setSaving(true);
-    try {
-      await rpc.call("updateSettings", {
-        hostname,
-        autoStart: overrides?.autoStart ?? autoStart,
-        viewUrl,
-      });
-      toast.success("Settings saved");
-    } catch {
-      toast.error("Could not save settings");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <label
-            htmlFor="sim-server-hostname"
-            className="mb-1.5 block text-sm font-medium text-foreground"
-          >
-            Server hostname
-          </label>
-          <Input
-            id="sim-server-hostname"
-            value={hostname}
-            onChange={(event) => setHostname(event.target.value)}
-            placeholder="127.0.0.1:8421"
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            Host and port of the baguette simulator server, e.g. 127.0.0.1:8421.
-          </p>
-        </div>
-        <Button onClick={() => void save()} disabled={saving || !hostname.trim()}>
-          {saving ? "Saving…" : "Save"}
-        </Button>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-foreground">
-            Start baguette automatically
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Runs `baguette serve --host 0.0.0.0` in the background when it is
-            not running.
-          </p>
-        </div>
-        <Button
-          size="sm"
-          variant={autoStart ? "default" : "outline"}
-          onClick={() => {
-            const next = !autoStart;
-            setAutoStart(next);
-            void save({ autoStart: next });
-          }}
-        >
-          {autoStart ? "On" : "Off"}
-        </Button>
-      </div>
-      <div>
-        <label
-          htmlFor="sim-view-url"
-          className="mb-1.5 block text-sm font-medium text-foreground"
-        >
-          HTTPS view URL
-        </label>
-        <Input
-          id="sim-view-url"
-          value={viewUrl}
-          onChange={(event) => setViewUrl(event.target.value)}
-          placeholder="sim.example.com"
-        />
-        <p className="mt-1 text-xs text-muted-foreground">
-          Optional HTTPS hostname that reaches the simulator server, so it can
-          be embedded inline when bb is served over HTTPS (e.g. a Cloudflare
-          tunnel public hostname pointing at the simulator server).
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default definePluginApp((app) => {
   app.slots.threadPanelAction({
     id: "simulators",
@@ -517,11 +409,5 @@ export default definePluginApp((app) => {
     icon: "Smartphone",
     layout: "flush",
     component: SimulatorsPanel,
-  });
-  app.slots.settingsSection({
-    id: "connection",
-    title: "Connection",
-    description: "Where the baguette simulator server listens.",
-    component: ConnectionSettings,
   });
 });

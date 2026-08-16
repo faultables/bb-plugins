@@ -61,16 +61,6 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
   },
-  updateSettings: {
-    input: z
-      .object({
-        hostname: z.string().min(1).optional(),
-        autoStart: z.boolean().optional(),
-        viewUrl: z.string().optional(),
-      })
-      .strict(),
-    output: z.object({ ok: z.boolean() }).strict(),
-  },
   getBaguetteStatus: {
     input: z.null(),
     output: z
@@ -573,19 +563,6 @@ export default async function plugin(bb: BbPluginApi) {
           message: `Could not reach ${baseUrl}`,
         };
       }
-    },
-
-    async updateSettings({ hostname, autoStart, viewUrl }) {
-      const current = await settings.get();
-      await bb.sdk.plugins.updateSettings({
-        pluginId: bb.pluginId,
-        values: {
-          hostname: hostname ?? current.hostname,
-          autoStart: autoStart ?? current.autoStart,
-          viewUrl: viewUrl ?? current.viewUrl,
-        },
-      });
-      return { ok: true };
     },
 
     async getBaguetteStatus() {

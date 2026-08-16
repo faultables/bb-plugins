@@ -1,0 +1,11 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "faultables-plugins",
+  "plugins": [
+    {
+      "name": "app-store-connect",
+      "source": "./plugins/app-store-connect"
+    }
+  ]
+}

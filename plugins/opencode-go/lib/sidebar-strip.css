@@ -1,0 +1,348 @@
+/* bb-plugin-opencode-go — sidebar footer usage strip styles.
+   Scoped under .opencode-go-sidebar; relies on the host's design tokens
+   (--sidebar*, --popover, --muted-foreground, ...) so it follows themes. */
+
+.opencode-go-sidebar,
+.opencode-go-sidebar__details {
+  --og-surface: var(--sidebar, var(--background));
+  --og-raised: var(--popover, var(--card));
+  --og-text: var(--sidebar-foreground, var(--foreground));
+  --og-muted: var(--muted-foreground);
+  --og-line: var(--sidebar-border, var(--border));
+  --og-hover: var(--sidebar-accent, var(--muted));
+  --og-focus: var(--sidebar-ring, var(--ring));
+  --og-ok: #10b981;
+  --og-warn: #f59e0b;
+  --og-high: #ef4444;
+}
+
+.opencode-go-sidebar {
+  box-sizing: border-box;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  align-self: stretch;
+  margin-left: 0;
+  overflow: visible;
+  color: var(--og-text);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-color-scheme: dark) {
+  .opencode-go-sidebar,
+  .opencode-go-sidebar__details {
+    --og-ok: #34d399;
+    --og-warn: #fbbf24;
+    --og-high: #f87171;
+  }
+}
+
+[data-collapsible="icon"] .opencode-go-sidebar {
+  display: none;
+}
+
+.opencode-go-sidebar button {
+  margin: 0;
+  border: 0;
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.opencode-go-sidebar__strip {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 2rem;
+  margin-left: 0;
+}
+
+.opencode-go-sidebar__provider {
+  display: grid;
+  min-width: 0;
+  height: 2rem;
+  cursor: pointer;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0 0.5rem;
+  border-radius: calc(var(--radius, 0.625rem) - 0.25rem);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.opencode-go-sidebar__provider:hover,
+.opencode-go-sidebar__provider[aria-expanded="true"] {
+  background: var(--og-hover);
+}
+
+.opencode-go-sidebar__provider:focus-visible,
+.opencode-go-sidebar__close:focus-visible {
+  outline: 2px solid var(--og-focus);
+  outline-offset: 1px;
+}
+
+.opencode-go-sidebar__mark,
+.opencode-go-sidebar__details-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.opencode-go-sidebar__mark {
+  width: 0.75rem;
+  height: 0.9375rem;
+  color: var(--og-text);
+}
+
+.opencode-go-sidebar__mark .opencode-go-sidebar__notch {
+  fill: var(--og-surface);
+}
+
+.opencode-go-sidebar__details-mark {
+  width: 0.75rem;
+  height: 0.9375rem;
+}
+
+.opencode-go-sidebar__details-mark .opencode-go-sidebar__notch {
+  fill: var(--og-raised);
+}
+
+.opencode-go-sidebar__mark svg,
+.opencode-go-sidebar__details-mark svg {
+  width: 100%;
+  height: 100%;
+}
+
+.opencode-go-sidebar__rail {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 0.3125rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--og-muted) 20%, transparent);
+}
+
+.opencode-go-sidebar__rail[data-empty="true"] {
+  opacity: 0.5;
+}
+
+.opencode-go-sidebar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--og-text) 38%, transparent);
+  transition: width 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.opencode-go-sidebar__fill[data-tone="ok"] {
+  background: var(--og-ok);
+}
+
+.opencode-go-sidebar__fill[data-tone="warn"] {
+  background: var(--og-warn);
+}
+
+.opencode-go-sidebar__fill[data-tone="high"] {
+  background: var(--og-high);
+}
+
+.opencode-go-sidebar__reading {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--og-text) 76%, transparent);
+  font-size: 0.75rem;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.opencode-go-sidebar__reading[data-tone="ok"] {
+  color: var(--og-ok);
+}
+
+.opencode-go-sidebar__reading[data-tone="warn"] {
+  color: var(--og-warn);
+}
+
+.opencode-go-sidebar__reading[data-tone="high"] {
+  color: var(--og-high);
+}
+
+.opencode-go-sidebar__close {
+  display: inline-flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(var(--radius, 0.625rem) - 0.25rem);
+  color: var(--og-muted);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.opencode-go-sidebar__close:hover {
+  background: var(--og-hover);
+  color: var(--og-text);
+}
+
+.opencode-go-sidebar__close svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.opencode-go-sidebar__details {
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  width: min(19.5rem, calc(100vw - 1rem));
+  max-width: calc(100vw - 1rem);
+  max-height: calc(100dvh - 1rem);
+  overflow: auto;
+  color: var(--og-text);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--og-line);
+  border-radius: var(--radius, 0.625rem);
+  background: var(--og-raised);
+  box-shadow: 0 1rem 2.5rem
+    color-mix(in srgb, var(--background) 68%, transparent);
+  animation: opencode-go-sidebar-enter 120ms ease-out;
+}
+
+.opencode-go-sidebar__details-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 0.625rem 0.5rem;
+  border-bottom: 1px solid var(--og-line);
+}
+
+.opencode-go-sidebar__details-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.opencode-go-sidebar__details-identity > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.0625rem;
+}
+
+.opencode-go-sidebar__details-identity strong {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-go-sidebar__details-identity span {
+  color: var(--og-muted);
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+
+.opencode-go-sidebar__close {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+}
+
+.opencode-go-sidebar__windows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.opencode-go-sidebar__window {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.625rem;
+}
+
+.opencode-go-sidebar__window + .opencode-go-sidebar__window {
+  border-left: 1px solid var(--og-line);
+}
+
+.opencode-go-sidebar__window-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.375rem;
+  color: var(--og-muted);
+  font-size: 0.625rem;
+  line-height: 1.2;
+}
+
+.opencode-go-sidebar__window-heading strong {
+  color: var(--og-text);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.opencode-go-sidebar__window > .opencode-go-sidebar__rail {
+  height: 0.25rem;
+}
+
+.opencode-go-sidebar__reset {
+  overflow: hidden;
+  color: var(--og-muted);
+  font-size: 0.5625rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-go-sidebar__message {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--og-line);
+  color: var(--og-muted);
+  font-size: 0.625rem;
+  line-height: 1.4;
+}
+
+@keyframes opencode-go-sidebar-enter {
+  from {
+    transform: translateY(0.1875rem);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .opencode-go-sidebar__fill,
+  .opencode-go-sidebar__provider,
+  .opencode-go-sidebar__close {
+    transition: none;
+  }
+
+  .opencode-go-sidebar__details {
+    animation: none;
+  }
+}

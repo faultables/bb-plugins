@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { definePluginApp, Markdown, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import { mountSidebarUsageStrip } from "@/lib/sidebar-strip";
+import "@/lib/sidebar-strip.css";
 
 type UsageWindow = {
   status: string;
@@ -45,12 +47,6 @@ function toneForPercent(percent: number) {
   if (percent >= 90) return "bg-red-500";
   if (percent >= 70) return "bg-amber-500";
   return "bg-emerald-500";
-}
-
-function textToneForPercent(percent: number) {
-  if (percent >= 90) return "text-red-500";
-  if (percent >= 70) return "text-amber-500";
-  return "text-emerald-500";
 }
 
 function useUsage() {
@@ -282,34 +278,19 @@ function GoUsagePanel() {
   );
 }
 
-function SidebarAccessory() {
-  const { result } = useUsage();
-  const usage = result?.usage;
-  if (!usage) return null;
-  const windows: UsageWindow[] = [usage.rolling, usage.weekly];
-  return (
-    <span
-      className="text-[11px] tabular-nums"
-      title={`OpenCode Go usage: 5h ${Math.round(usage.rolling.percent)}% / 7d ${Math.round(usage.weekly.percent)}%`}
-    >
-      {windows.map((window, index) => (
-        <span key={index} className={textToneForPercent(window.percent)}>
-          {index > 0 && "/"}
-          {Math.round(window.percent)}%
-        </span>
-      ))}
-    </span>
-  );
-}
-
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "sidebar-usage-strip",
+    mount: ({ signal, pluginId }) =>
+      mountSidebarUsageStrip(signal, pluginId),
+  });
+
   app.slots.navPanel({
     id: "usage",
     title: "OpenCode Go",
     icon: "ChartColumn",
     path: "usage",
     component: GoUsagePanel,
-    experimental_sidebarAccessory: SidebarAccessory,
   });
   app.slots.threadPanelAction({
     id: "usage",

@@ -1,7 +1,7 @@
 // iOS Simulators — a right-panel tab listing simulators served by baguette,
 // with boot/shutdown controls, a live per-simulator view, and a configurable
 // server hostname (plus optional auto-start of `baguette serve`).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
   useBbNavigate,
@@ -12,6 +12,7 @@ import {
 import type { rpcContract } from "./server";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type Simulator = {
   name: string;
@@ -172,6 +173,7 @@ function SimulatorList() {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const [simulators, setSimulators] = useState<Simulator[]>([]);
+  const [search, setSearch] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyUdid, setBusyUdid] = useState<string | null>(null);
@@ -182,6 +184,7 @@ function SimulatorList() {
     spawned: boolean;
     stopped: boolean;
   } | null>(null);
+  const previousRunning = useRef<boolean | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,6 +204,7 @@ function SimulatorList() {
   const refreshStatus = useCallback(async () => {
     try {
       const status = await rpc.call("getBaguetteStatus");
+      previousRunning.current = status.running;
       setBaguette({
         running: status.running,
         autoStart: status.autoStart,
@@ -219,17 +223,22 @@ function SimulatorList() {
 
   useRealtime("baguette-status", (payload) => {
     const status = payload as { running?: boolean; spawned?: boolean } | null;
-    if (status) {
-      setBaguette((current) => ({
-        running: !!status.running,
-        spawned: status.spawned ?? current?.spawned ?? false,
-        autoStart: current?.autoStart ?? true,
-        stopped: current?.stopped ?? false,
-      }));
-      // Baguette just came up — pull the fresh simulator list.
-      if (status.running && baguette && !baguette.running) {
-        void load();
-      }
+    if (!status || typeof status.running !== "boolean") return;
+
+    const running = status.running;
+    const wasRunning = previousRunning.current;
+    previousRunning.current = running;
+    setBaguette((current) => ({
+      running,
+      spawned: status.spawned ?? current?.spawned ?? false,
+      autoStart: current?.autoStart ?? true,
+      stopped: current?.stopped ?? false,
+    }));
+
+    // Refresh on daemon start or stop so the list does not show stale
+    // simulators after the server changes state outside the panel.
+    if (wasRunning !== null && wasRunning !== running) {
+      void load();
     }
   });
 
@@ -268,15 +277,27 @@ function SimulatorList() {
   async function stopBaguette() {
     try {
       const result = await rpc.call("stopBaguette");
-      toast.success(result.message);
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.message);
       await refreshStatus();
+      // The daemon owns the simulator list, so refresh it after stopping the
+      // daemon instead of leaving the old list visible in the panel.
+      await load();
     } catch {
       toast.error("Could not stop baguette");
     }
   }
 
-  const running = simulators.filter(isRunning);
-  const available = simulators.filter((s) => !isRunning(s));
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredSimulators = normalizedSearch
+    ? simulators.filter((simulator) =>
+        [simulator.name, simulator.runtime, simulator.state, simulator.udid].some(
+          (value) => value.toLowerCase().includes(normalizedSearch),
+        ),
+      )
+    : simulators;
+  const running = filteredSimulators.filter(isRunning);
+  const available = filteredSimulators.filter((s) => !isRunning(s));
 
   function renderGroup(title: string, group: Simulator[]) {
     if (group.length === 0) return null;
@@ -363,6 +384,19 @@ function SimulatorList() {
         </Button>
       </div>
 
+      <div className="space-y-1.5">
+        <label htmlFor="simulator-search" className="text-xs font-medium text-muted-foreground">
+          Search simulators
+        </label>
+        <Input
+          id="simulator-search"
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Name, runtime, state, or UDID"
+        />
+      </div>
+
       <div
         className={`flex items-center gap-2 rounded-lg border p-3 text-sm ${
           baguette?.running
@@ -410,6 +444,10 @@ function SimulatorList() {
       ) : simulators.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
           No simulators found.
+        </p>
+      ) : filteredSimulators.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No simulators match “{search}”.
         </p>
       ) : (
         <>

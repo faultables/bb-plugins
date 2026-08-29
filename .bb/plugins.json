@@ -14,6 +14,14 @@
     {
       "name": "opencode-go",
       "source": "./plugins/opencode-go"
+    },
+    {
+      "name": "video-preview",
+      "source": "./plugins/video-preview"
+    },
+    {
+      "name": "chief-of-staff",
+      "source": "./plugins/chief-of-staff"
     }
   ]
 }

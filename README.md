@@ -10,6 +10,8 @@ plugin lives under `plugins/<name>` and is registered in `.bb/plugins.json`.
 | [iOS Simulators](./plugins/ios-simulators/) | Browse, boot, and watch iOS simulators served by [baguette](https://github.com/tddworks/baguette). |
 | [App Store Connect](./plugins/app-store-connect/) | List and browse your App Store Connect apps. |
 | [OpenCode Go](./plugins/opencode-go/) | Track your OpenCode Go usage and limits. |
+| [Video Preview](./plugins/video-preview/) | Preview video files (mp4, webm, mov) inline instead of downloading — file opener + inline Tasks/timeline attachments. |
+| [Chief of Staff](./plugins/chief-of-staff/) | Delegates your backlog: one agent thread per item, routine questions answered, operator decisions escalated. |
 
 ## Requirements
 
@@ -26,6 +28,8 @@ Install individual plugins from this repository:
 # from a clone
 bb plugin install git:https://github.com/faultables/bb-plugins.git --plugin ios-simulators
 bb plugin install git:https://github.com/faultables/bb-plugins.git --plugin app-store-connect
+bb plugin install git:https://github.com/faultables/bb-plugins.git --plugin video-preview
+bb plugin install git:https://github.com/faultables/bb-plugins.git --plugin chief-of-staff
 
 # or from a local checkout
 bb plugin install path:. --plugin ios-simulators

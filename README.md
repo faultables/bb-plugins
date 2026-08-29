@@ -103,6 +103,18 @@ Configured under **Extensions → Plugins → OpenCode Go** or via
 - `rollingLimitDollars` / `weeklyLimitDollars` / `monthlyLimitDollars` —
   displayed dollar limits (defaults `12` / `30` / `60`).
 
+## Agent Presets (Tasks)
+
+Trackable `bb tasks` agent presets live in [`presets/tasks-presets.json`](./presets/tasks-presets.json) (git source of truth, `name` is the key). The `presets/sync.sh` helper keeps them in sync with the local `tasks` SQLite DB:
+
+```sh
+./presets/sync.sh export  # dump DB → JSON
+./presets/sync.sh import  # upsert JSON → DB (by name, idempotent)
+./presets/sync.sh diff    # show drift
+```
+
+Add a preset to the JSON, commit, and teammates run `import`; or run `export` after editing in the UI and commit the diff.
+
 ## Development
 
 ```sh

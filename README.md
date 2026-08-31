@@ -7,7 +7,7 @@ plugin lives under `plugins/<name>` and is registered in `.bb/plugins.json`.
 
 | Plugin | Description |
 | --- | --- |
-| [iOS Simulators](./plugins/ios-simulators/) | Browse, boot, and watch iOS simulators served by [baguette](https://github.com/tddworks/baguette). |
+| [iOS Simulators](./plugins/ios-simulators/) | Browse, boot, and watch iOS simulators served by [baguette](https://github.com/tddworks/baguette) — with optional [SimSlim](https://github.com/mobai-app/simslim) slimming (~4× RAM). |
 | [App Store Connect](./plugins/app-store-connect/) | List and browse your App Store Connect apps. |
 | [OpenCode Go](./plugins/opencode-go/) | Track your OpenCode Go usage and limits. |
 | [Video Preview](./plugins/video-preview/) | Preview video files (mp4, webm, mov) inline instead of downloading — file opener + inline Tasks/timeline attachments. |
@@ -18,6 +18,7 @@ plugin lives under `plugins/<name>` and is registered in `.bb/plugins.json`.
 - [bb](https://getbb.app) (0.38+)
 - Node.js 20+ and npm
 - [baguette](https://github.com/tddworks/baguette) (for iOS Simulators only)
+- [SimSlim](https://github.com/mobai-app/simslim) (optional, for iOS Simulators — `brew install mobai-app/tap/simslim` for ~4× simulator RAM savings)
 - [asc](https://github.com/rorkai/App-Store-Connect-CLI) (for App Store Connect)
 
 ## Installation
@@ -38,7 +39,7 @@ bb plugin install path:. --plugin ios-simulators
 ## iOS Simulators
 
 The plugin manages the [baguette](https://github.com/tddworks/baguette) simulator
-server:
+server, with optional [SimSlim](https://github.com/mobai-app/simslim) integration:
 
 - **Right panel** — from any thread, open the right panel → *Actions* →
   *iOS Simulators* for the simulator list. Running simulators can be opened
@@ -46,7 +47,9 @@ server:
   the device and its OS (e.g. `iPhone 13 (iOS 26.5)`).
 - **Watchdog** — keeps baguette running in the background
   (`baguette serve --host <hostname> --port <port>`), with a manual
-  Start/Stop control and a status banner in the panel.
+  Start/Stop control and a status banner in the panel. **Stop** also shuts
+  down any booted simulators (including slimmed ones) to free RAM — slim
+  overrides are persistent so the next boot stays slim.
 - **Inline embedding over HTTPS** — baguette sends
   `Content-Security-Policy: frame-ancestors 'none'`, so the plugin serves its
   pages through a local reverse proxy that strips the header and tunnels the
@@ -58,6 +61,14 @@ server:
   boots lazily on the first status/view call, binds a stable loopback port
   (reused across plugin reloads so ingress configs keep working), and shuts
   down with the plugin.
+- **SimSlim** — when `simslim` is installed, the panel shows a fleet bar
+  (`X booted · Y GB total · ~4× RAM per slim sim`), per-sim badges
+  (`Slim 170/170` / `Stock 0/170` + RAM), and **Slim** / **Restore stock**
+  actions (with `except: siri,search` / `keep: com.apple.apsd` options).
+  `simslim on` disables ~170 background daemons and reboots slim (e.g.
+  `176 procs · 2.6 GB` → `71 procs · 1.1 GB`). Fleet refreshes are
+  event-driven — after any boot/shutdown/slim and on `baguette-status`
+  changes, no polling.
 
 ### Settings
 

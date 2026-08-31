@@ -10,6 +10,12 @@
 // plugin reloads/server restarts: a spawned process that outlived its parent
 // is still stoppable. SIGTERM is followed by SIGKILL because baguette may
 // ignore the graceful signal.
+//
+// SimSlim integration: optionally drives `simslim` (https://github.com/mobai-app/simslim)
+// to slim simulators (disable ~170 background daemons → ~4x RAM savings).
+// All simslim calls are via CLI JSON mode and share the same `xcrun simctl`
+// device set as baguette. Slim state is per-device launchd overrides, so a
+// slimmed device boots slim thereafter.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
@@ -92,6 +98,93 @@ export const rpcContract = defineRpcContract({
         message: z.string(),
       })
       .strict(),
+  },
+  // SimSlim RPCs
+  getSimSlimStatus: {
+    input: z.null(),
+    output: z.object({
+      installed: z.boolean(),
+      version: z.string().nullable(),
+      path: z.string().nullable(),
+      managedTotal: z.number().int().nullable(),
+      error: z.string().nullable(),
+    }),
+  },
+  getSimSlimFleet: {
+    input: z.null(),
+    output: z.object({
+      sims: z.array(
+        z.object({
+          udid: z.string(),
+          name: z.string(),
+          state: z.string(),
+          osVersion: z.string().optional(),
+          managedDisabled: z.number().int().nullable().optional(),
+          managedTotal: z.number().int().optional(),
+          statusError: z.string().optional(),
+          memory: z
+            .object({
+              processes: z.number().int(),
+              bytes: z.number().int(),
+              cpu: z.number(),
+            })
+            .nullable()
+            .optional(),
+          memoryError: z.string().optional(),
+          diskBytes: z.number().int().nullable().optional(),
+        }),
+      ),
+      totalBytes: z.number().int(),
+      error: z.string().nullable(),
+    }),
+  },
+  getSimSlimProfiles: {
+    input: z.null(),
+    output: z.object({
+      profiles: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          description: z.string(),
+          downside: z.string().optional(),
+          approxMemoryMB: z.number().int().optional(),
+          labels: z.array(z.string()),
+        }),
+      ),
+      error: z.string().nullable(),
+    }),
+  },
+  getSimSlimSimulatorInfo: {
+    input: z.object({ udid: z.string().min(1) }).strict(),
+    output: z.object({
+      udid: z.string(),
+      booted: z.boolean(),
+      managedDisabled: z.number().int().nullable(),
+      managedTotal: z.number().int().nullable(),
+      verdict: z.string().nullable(),
+      memory: z
+        .object({ processes: z.number().int(), bytes: z.number().int(), cpu: z.number() })
+        .nullable(),
+      memoryError: z.string().nullable(),
+      error: z.string().nullable(),
+    }),
+  },
+  runSlimOn: {
+    input: z
+      .object({
+        udid: z.string().min(1),
+        except: z.string().optional(),
+        keep: z.string().optional(),
+        preserveBootState: z.boolean().optional(),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string() }),
+  },
+  runSlimOff: {
+    input: z
+      .object({ udid: z.string().min(1), preserveBootState: z.boolean().optional() })
+      .strict(),
+    output: z.object({ ok: z.boolean(), message: z.string() }),
   },
 });
 
@@ -237,6 +330,95 @@ function resolveBaguette(): string {
     if (existsSync(candidate)) return candidate;
   }
   return "baguette";
+}
+
+// ---- SimSlim helpers ----
+
+function resolveSimSlim(): string | null {
+  const candidates = [
+    join(homedir(), "go/bin/simslim"),
+    "/opt/homebrew/bin/simslim",
+    "/usr/local/bin/simslim",
+    join(homedir(), ".local/bin/simslim"),
+  ];
+  for (const c of candidates) if (existsSync(c)) return c;
+  // fall back to PATH lookup — execFile will fail if not found, caller handles
+  return "simslim";
+}
+
+function execSimSlim(args: string[], timeoutMs = 30_000): Promise<{ stdout: string; stderr: string }> {
+  const bin = resolveSimSlim() ?? "simslim";
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        const out = String(stdout ?? "") + String(stderr ?? "");
+        // Attach output for caller to surface
+        (err as any).stdout = stdout;
+        (err as any).stderr = stderr;
+        (err as any).output = out;
+        reject(err);
+      } else resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+}
+
+async function shutdownBootedSimulators(): Promise<{ shutdown: number; errors: string[] }> {
+  // Best-effort: shutdown every Booted device so "Stop baguette" also frees the ~1-4 GB per slim simulator.
+  // Prefer simctl directly — works whether or not simslim is installed and avoids an extra binary lookup.
+  // Slim overrides are persistent, so a later boot stays slim.
+  let bootedUdids: string[] = [];
+  try {
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile("xcrun", ["simctl", "list", "devices", "-j"], { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(String(stdout));
+      });
+    });
+    const parsed = JSON.parse(out) as { devices: Record<string, { udid: string; state: string }[]> };
+    for (const list of Object.values(parsed.devices)) {
+      for (const d of list) if (String(d.state).toLowerCase() === "booted") bootedUdids.push(d.udid);
+    }
+  } catch (e) {
+    // Fallback: try simslim top --json if simctl parsing fails
+    try {
+      const { stdout } = await execSimSlim(["top", "--json"], 5000);
+      const top = JSON.parse(stdout) as { sims: { udid: string }[] | null };
+      bootedUdids = (top.sims ?? []).map((s) => s.udid);
+    } catch {
+      return { shutdown: 0, errors: [String((e as Error)?.message ?? e).slice(0, 200)] };
+    }
+  }
+  if (bootedUdids.length === 0) return { shutdown: 0, errors: [] };
+  const errors: string[] = [];
+  let shutdown = 0;
+  await Promise.all(
+    bootedUdids.map(
+      (udid) =>
+        new Promise<void>((resolve) => {
+          // Use simctl — simslim shutdown is the same but simctl is always present
+          execFile("xcrun", ["simctl", "shutdown", udid], { timeout: 30_000 }, (err) => {
+            if (!err) shutdown++;
+            else errors.push(`${udid.slice(0, 8)}: ${String((err as any)?.message ?? err).slice(0, 120)}`);
+            resolve();
+          });
+        }),
+    ),
+  );
+  return { shutdown, errors };
+}
+
+async function simSlimVersion(): Promise<{ installed: boolean; version: string | null; path: string | null; error: string | null }> {
+  const bin = resolveSimSlim();
+  const path = bin && existsSync(bin) ? bin : bin;
+  try {
+    const { stdout } = await execSimSlim(["version"], 5000);
+    const v = stdout.trim().split("\n")[0]?.trim() ?? null;
+    return { installed: true, version: v && v.length ? v : "unknown", path, error: null };
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (/no such file|not found|ENOENT/i.test(msg)) return { installed: false, version: null, path: null, error: null };
+    return { installed: false, version: null, path: null, error: msg.slice(0, 300) };
+  }
 }
 
 interface BaguetteOwner {
@@ -603,16 +785,22 @@ export default async function plugin(bb: BbPluginApi) {
       const port = extractPort(hostname);
       const target = await ownedPid();
 
+      // Shutdown booted simulators first — frees the per-sim ~1-4 GB (slim simulators included).
+      // Slim overrides are persistent, so a later boot stays slim.
+      const sims = await shutdownBootedSimulators();
+      const simMsg = sims.shutdown > 0 ? ` Shut down ${sims.shutdown} simulator${sims.shutdown === 1 ? "" : "s"}.` : "";
+      const simErr = sims.errors.length ? ` (${sims.errors.slice(0, 2).join("; ")})` : "";
+
       if (target !== null) {
         const dead = await killBaguettePid(target);
         baguette = null;
         await clearOwnership();
         await bb.storage.kv.set(MANUAL_STOP_KEY, { port });
         if (!dead) {
-          return { ok: false, message: "Could not stop baguette." };
+          return { ok: false, message: "Could not stop baguette." + simMsg };
         }
         publishStatus(false);
-        return { ok: true, message: "Stopped baguette." };
+        return { ok: true, message: `Stopped baguette.${simMsg}${simErr}` };
       }
 
       // Not owned by us — stop any baguette process listening on the port.
@@ -624,7 +812,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (targets.length === 0) {
         return {
           ok: false,
-          message: "Baguette is not running.",
+          message: sims.shutdown > 0 ? `Baguette is not running.${simMsg}` : "Baguette is not running.",
         };
       }
       for (const listener of targets) {
@@ -632,7 +820,137 @@ export default async function plugin(bb: BbPluginApi) {
       }
       await bb.storage.kv.set(MANUAL_STOP_KEY, { port });
       publishStatus(false);
-      return { ok: true, message: "Stopped baguette." };
+      return { ok: true, message: `Stopped baguette.${simMsg}${simErr}` };
+    },
+
+    // ---- SimSlim ----
+
+    async getSimSlimStatus() {
+      const v = await simSlimVersion();
+      let managedTotal: number | null = null;
+      if (v.installed) {
+        try {
+          const { stdout } = await execSimSlim(["profiles", "--json"], 5000);
+          const parsed = JSON.parse(stdout) as any[];
+          // managedTotal is deduped union; approximate as sum unique labels length
+          // but simslim's list --json gives managedTotal per device, so just take first profile set size alternative
+          // Use 170 fallback: count unique labels across all categories
+          const labels = new Set<string>();
+          for (const p of parsed) for (const l of (p.labels ?? [])) labels.add(l);
+          managedTotal = labels.size || 170;
+        } catch {
+          managedTotal = 170;
+        }
+      }
+      return { installed: v.installed, version: v.version, path: v.path, managedTotal, error: v.error };
+    },
+
+    async getSimSlimFleet() {
+      try {
+        const { stdout } = await execSimSlim(["top", "--json"], 8000);
+        const parsed = JSON.parse(stdout) as { sims: any[] | null; totalBytes: number };
+        return { sims: parsed.sims ?? [], totalBytes: parsed.totalBytes ?? 0, error: null };
+      } catch (e: any) {
+        const msg = String(e?.output ?? e?.message ?? e).slice(0, 500);
+        if (/no such file|not found|ENOENT/i.test(msg)) return { sims: [], totalBytes: 0, error: "simslim not installed" };
+        return { sims: [], totalBytes: 0, error: msg };
+      }
+    },
+
+    async getSimSlimProfiles() {
+      try {
+        const { stdout } = await execSimSlim(["profiles", "--json"], 5000);
+        const parsed = JSON.parse(stdout) as any[];
+        return {
+          profiles: parsed.map((p) => ({
+            id: String(p.id),
+            name: String(p.name),
+            description: String(p.description ?? ""),
+            downside: p.downside ? String(p.downside) : undefined,
+            approxMemoryMB: typeof p.approxMemoryMB === "number" ? p.approxMemoryMB : undefined,
+            labels: Array.isArray(p.labels) ? p.labels.map(String) : [],
+          })),
+          error: null,
+        };
+      } catch (e: any) {
+        return { profiles: [], error: String(e?.output ?? e?.message ?? e).slice(0, 400) };
+      }
+    },
+
+    async getSimSlimSimulatorInfo({ udid }) {
+      // Must be booted to read launchd overrides + memory
+      try {
+        // status + measure in parallel (status gives verdict/managedDisabled, measure gives memory)
+        const [statusRes, measureRes] = await Promise.allSettled([
+          execSimSlim(["status", udid, "--json"], 8000),
+          execSimSlim(["measure", udid, "--json"], 8000),
+        ]);
+        let managedDisabled: number | null = null;
+        let managedTotal: number | null = null;
+        let verdict: string | null = null;
+        let memory: { processes: number; bytes: number; cpu: number } | null = null;
+        let memoryError: string | null = null;
+        let booted = true;
+        let error: string | null = null;
+
+        if (statusRes.status === "fulfilled") {
+          try {
+            const s = JSON.parse(statusRes.value.stdout);
+            managedDisabled = typeof s.managedDisabled === "number" ? s.managedDisabled : null;
+            managedTotal = typeof s.managedTotal === "number" ? s.managedTotal : null;
+            verdict = typeof s.verdict === "string" ? s.verdict : null;
+          } catch {}
+        } else {
+          const msg = String((statusRes.reason as any)?.output ?? (statusRes.reason as any)?.message ?? "");
+          if (/must be booted|does not appear to be booted|Shutdown/i.test(msg)) {
+            booted = false;
+            error = null; // not an error, just shutdown
+          } else error = msg.slice(0, 300);
+        }
+
+        if (measureRes.status === "fulfilled") {
+          try {
+            const m = JSON.parse(measureRes.value.stdout);
+            if (typeof m.bytes === "number") memory = { processes: m.processes ?? 0, bytes: m.bytes, cpu: m.cpu ?? 0 };
+          } catch {}
+        } else {
+          const msg = String((measureRes.reason as any)?.output ?? (measureRes.reason as any)?.message ?? "");
+          if (/must be booted|does not appear to be booted/i.test(msg)) {
+            booted = false;
+          } else memoryError = msg.slice(0, 300);
+        }
+
+        return { udid, booted, managedDisabled, managedTotal, verdict, memory, memoryError, error };
+      } catch (e: any) {
+        return { udid, booted: false, managedDisabled: null, managedTotal: null, verdict: null, memory: null, memoryError: null, error: String(e?.message ?? e).slice(0, 300) };
+      }
+    },
+
+    async runSlimOn({ udid, except, keep, preserveBootState }) {
+      const args = ["on", udid];
+      if (except && except.trim().length) args.push("--except", except.trim());
+      if (keep && keep.trim().length) args.push("--keep", keep.trim());
+      if (preserveBootState) args.push("--preserve-boot-state");
+      try {
+        // Slimming boots + ~170 launchctl calls + reboot → up to 10m default
+        await execSimSlim(args, 15 * 60_000);
+        return { ok: true, message: `Slimmed ${udid}` };
+      } catch (e: any) {
+        const out = String(e?.output ?? e?.stderr ?? e?.stdout ?? e?.message ?? e).slice(0, 800);
+        return { ok: false, message: out || "Slim failed" };
+      }
+    },
+
+    async runSlimOff({ udid, preserveBootState }) {
+      const args = ["off", udid];
+      if (preserveBootState) args.push("--preserve-boot-state");
+      try {
+        await execSimSlim(args, 15 * 60_000);
+        return { ok: true, message: `Restored ${udid} to stock` };
+      } catch (e: any) {
+        const out = String(e?.output ?? e?.stderr ?? e?.stdout ?? e?.message ?? e).slice(0, 800);
+        return { ok: false, message: out || "Restore failed" };
+      }
     },
   });
 

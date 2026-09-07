@@ -1,19 +1,48 @@
 import { describe, expect, it, beforeEach } from "vitest";
+import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createFakePluginHost,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
-import plugin from "./server";
+import plugin, { classifyRung } from "./server";
 
-const spawnCalls: Array<{ prompt: string; title?: string }> = [];
+const spawnCalls: Array<Record<string, unknown> & { prompt: string; title?: string }> = [];
 
-async function makeHost() {
+/** Hermetic `bb` stub: answers `tasks preset show <name> --json` with a canned preset. */
+function makeStubBbCli(preset: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(tmpdir(), "cos-test-bb-"));
+  const script = join(dir, "bb");
+  writeFileSync(
+    script,
+    `#!/bin/sh\nprintf '%s' '${JSON.stringify({ preset }).replace(/'/g, "'\\''" )}'\n`,
+  );
+  chmodSync(script, 0o755);
+  return script;
+}
+
+const FAKE_PRESET = {
+  name: "Dial High",
+  providerId: "pi",
+  modelId: "test/model-x",
+  reasoningLevel: "xhigh",
+  serviceTier: null,
+  permissionMode: "full",
+  environmentKind: "project-default",
+  baseBranch: null,
+  instructions: "Hard tasks: think carefully before acting.",
+};
+
+async function makeHost(extraSettings: Record<string, string> = {}) {
   const { bb, harness } = createFakePluginHost({
     pluginId: "chief-of-staff",
     settings: {
       standingAnswers: "- Always name files in kebab-case.\n- Tests first.",
       nudgeAfter: "off",
       escalationTimeout: "1h",
+      autoTriage: "off",
+      ...extraSettings,
     },
     sdk: {
       projects: {
@@ -36,10 +65,17 @@ let harness: Awaited<ReturnType<typeof makeHost>>;
 
 beforeEach(async () => {
   spawnCalls.length = 0;
+  delete process.env.BB_CLI;
   harness = await makeHost();
 });
 
 describe("chief-of-staff", () => {
+  it("classifies item titles into dial rungs", () => {
+    expect(classifyRung("Migrate the auth service to the new gateway", "")).toBe("ultra");
+    expect(classifyRung("Fix the flaky login test", "")).toBe("high");
+    expect(classifyRung("Fix typo in the readme", "")).toBe("low");
+    expect(classifyRung("Add a settings page", "")).toBe("medium");
+  });
   it("adds an item and opens a worker thread with the working agreement", async () => {
     const result = await harness.behavior.callRpc("items_add", {
       title: "Fix the flaky login test",
@@ -161,5 +197,39 @@ describe("chief-of-staff", () => {
     expect(removed.removed).toBe(true);
     const calls = harness.inspection.sdk.callsTo("threads.stop");
     expect(calls.length).toBe(1);
+  });
+
+  it("spawns workers with the preset's execution config and effort profile", async () => {
+    process.env.BB_CLI = makeStubBbCli(FAKE_PRESET);
+    harness = await makeHost({ autoTriage: "on" });
+    const result = await harness.behavior.callRpc("items_add", {
+      title: "Do the thing",
+      rung: "high",
+    });
+    expect(result.item.preset).toBe("Dial High");
+    const spawned = spawnCalls[0] as Record<string, unknown>;
+    expect(spawned.providerId).toBe("pi");
+    expect(spawned.model).toBe("test/model-x");
+    expect(spawned.reasoningLevel).toBe("xhigh");
+    expect(spawned.permissionMode).toBe("full");
+    expect(spawned.executionInputSources).toMatchObject({
+      providerId: "explicit",
+      model: "explicit",
+    });
+    expect(spawned.prompt).toContain("Effort profile");
+    expect(spawned.prompt).toContain("think carefully before acting");
+  });
+
+  it("falls back to the project default when a preset cannot be resolved", async () => {
+    process.env.BB_CLI = makeStubBbCli({}); // resolves to nothing
+    harness = await makeHost({ autoTriage: "on" });
+    const result = await harness.behavior.callRpc("items_add", {
+      title: "Just do it",
+      rung: "high",
+    });
+    expect(result.item.status).toBe("running");
+    const spawned = spawnCalls[0] as Record<string, unknown>;
+    expect(spawned.providerId).toBeUndefined();
+    expect(spawned.prompt).not.toContain("Effort profile");
   });
 });

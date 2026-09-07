@@ -154,6 +154,14 @@ function ItemRow({
     <li className="flex flex-col gap-1.5 px-4 py-3">
       <div className="flex items-center gap-3">
         <StatusBadge status={item.status} />
+        {item.preset !== null && (
+          <span
+            className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground"
+            title={`Workers run on the "${item.preset}" preset`}
+          >
+            {item.preset}
+          </span>
+        )}
         <span
           className={cn(
             "min-w-0 flex-1 truncate text-sm",
@@ -193,6 +201,7 @@ function ChiefOfStaffPage() {
   const navigate = useBbNavigate();
   const { rpc, brief, error, report, refetch } = useBrief();
   const [title, setTitle] = useState("");
+  const [rung, setRung] = useState<"auto" | "low" | "medium" | "high" | "ultra">("auto");
   const [pending, setPending] = useState(false);
 
   const add = async (event: FormEvent<HTMLFormElement>) => {
@@ -201,8 +210,12 @@ function ChiefOfStaffPage() {
     if (next === "" || pending) return;
     setPending(true);
     try {
-      await rpc.call("items_add", { title: next });
+      await rpc.call("items_add", {
+        title: next,
+        ...(rung === "auto" ? {} : { rung }),
+      });
       setTitle("");
+      setRung("auto");
       refetch();
     } catch (cause) {
       report(cause);
@@ -263,6 +276,19 @@ function ChiefOfStaffPage() {
             placeholder="Add a backlog item — a worker thread opens for it…"
             aria-label="New backlog item"
           />
+          <select
+            value={rung}
+            onChange={(event) => setRung(event.target.value as typeof rung)}
+            aria-label="Worker effort rung (auto triages from the title)"
+            title="Worker effort rung — Auto triages from the title (small → low, hard → high, open-ended → ultra)"
+            className="h-9 shrink-0 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="auto">Effort: auto</option>
+            <option value="low">Effort: low</option>
+            <option value="medium">Effort: medium</option>
+            <option value="high">Effort: high</option>
+            <option value="ultra">Effort: ultra</option>
+          </select>
           <Button type="submit" disabled={pending || title.trim() === ""}>
             <Icon name="Plus" className="size-4" />
             Delegate

@@ -54,6 +54,7 @@ type Build = {
 type ManagedBuild = {
   build: Build;
   version: string;
+  platformLabel?: string;
 };
 
 type Version = {
@@ -83,6 +84,11 @@ type BuildGroup = {
   isInternalGroup: boolean;
   hasAccessToAllBuilds: boolean;
 };
+
+function shortPlatformLabel(label?: string | null) {
+  if (!label) return null;
+  return label.replace(/ Builds$/i, "");
+}
 
 function formatDate(value?: string | null) {
   if (!value) return "—";
@@ -139,12 +145,14 @@ function BuildTestSettings({
   appId,
   build,
   version,
+  platformLabel,
   defaultLocale,
   onClose,
 }: {
   appId: string;
   build: Build;
   version: string;
+  platformLabel?: string;
   defaultLocale?: string;
   onClose?: () => void;
 }) {
@@ -266,6 +274,9 @@ function BuildTestSettings({
         <div className="min-w-0">
           <p className="text-sm font-semibold">TestFlight settings</p>
           <p className="text-xs text-muted-foreground">
+            {shortPlatformLabel(platformLabel)
+              ? `${shortPlatformLabel(platformLabel)} · `
+              : ""}
             Version {version} · Build {build.buildNumber}
           </p>
         </div>
@@ -638,6 +649,7 @@ function AppBuilds({ app, onBack }: { app: App; onBack: () => void }) {
               appId={app.id}
               build={managedBuild.build}
               version={managedBuild.version}
+              platformLabel={managedBuild.platformLabel}
               defaultLocale={app.primaryLocale}
               onClose={() => setManagedBuild(null)}
             />
@@ -696,7 +708,7 @@ function AppBuilds({ app, onBack }: { app: App; onBack: () => void }) {
                         onSeeMoreBuilds={() => void seeMoreBuilds(version)}
                         loadingMore={loadingMoreVersion === version.id}
                         onManageBuild={(build, version) =>
-                          setManagedBuild({ build, version })
+                          setManagedBuild({ build, version, platformLabel: group.label })
                         }
                       />
                     );
@@ -853,6 +865,7 @@ function CompactOverview({
           appId={appId}
           build={managedBuild.build}
           version={managedBuild.version}
+          platformLabel={managedBuild.platformLabel}
           defaultLocale={defaultLocale}
           onClose={() => setManagedBuild(null)}
         />
@@ -892,6 +905,7 @@ function CompactOverview({
                         setManagedBuild({
                           build: latest,
                           version: version.version,
+                          platformLabel: group.label,
                         })
                       }
                     >

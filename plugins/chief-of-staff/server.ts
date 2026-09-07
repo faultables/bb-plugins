@@ -5,7 +5,9 @@
 // standing instructions), and escalates to you — in this panel — only the
 // decisions only you can make. It briefs you on progress at the top of the
 // panel and via `bb chief-of-staff brief`.
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import {
   defineRpcContract,
   PLUGIN_CLI_OUTPUT_MAX_BYTES,
@@ -27,6 +29,7 @@ const itemSchema = z.object({
   threadId: z.string().nullable(),
   projectId: z.string().nullable(),
   summary: z.string().nullable(),
+  preset: z.string().nullable(),
   nudgedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -54,6 +57,26 @@ const activitySchema = z.object({
   createdAt: z.string(),
 });
 
+const RUNG_VALUES = ["low", "medium", "high", "ultra"] as const;
+export type Rung = (typeof RUNG_VALUES)[number];
+
+const RUNG_PATTERNS: Array<[Rung, RegExp]> = [
+  // Open-ended, cross-cutting work: the outcome is clear, the path is not.
+  ["ultra", /\b(migrat\w*|architect\w*|rewrit\w*|redesign\w*|re-?platform\w*|overhaul\w*|\bport\b|cross-\w+|multi-?(service|system|repo|package)|whole (codebase|app|repo|system)|every (file|module|service|endpoint)|from scratch|greenfield)\b/i],
+  // Hard, expensive-to-miss work.
+  ["high", /\b(hard|tricky|subtle|race condition|concurr\w*|deadlock|security|flak\w*|memory leak|performance|optimi[sz]\w*|scal(e|ing)|investigat\w*|root cause|crash\w*|regression|algorithm|protocol|distributed|intermittent|heisenbug|data loss|corrupt\w*)\b/i],
+  // Small, well-defined work.
+  ["low", /\b(typo\w*|renam\w*|\bbump\b|dependenc\w*|chore|small|tiny|quick|minor|one-?line|docs?\b|readme|comment|format\w*|lint\w*|typecheck|screenshot\w*|\bdraft\b)\b/i],
+];
+
+export function classifyRung(title: string, detail: string): Rung {
+  const haystack = `${title} ${detail}`;
+  for (const [rung, pattern] of RUNG_PATTERNS) {
+    if (pattern.test(haystack)) return rung;
+  }
+  return "medium";
+}
+
 export type CosItem = z.infer<typeof itemSchema>;
 export type CosDecision = z.infer<typeof decisionSchema>;
 export type CosActivity = z.infer<typeof activitySchema>;
@@ -69,7 +92,11 @@ export const rpcContract = defineRpcContract({
     }),
   },
   items_add: {
-    input: z.object({ title: z.string().trim().min(1).max(300) }),
+    input: z.object({
+      title: z.string().trim().min(1).max(300),
+      rung: z.enum(RUNG_VALUES).optional(),
+      preset: z.string().trim().min(1).max(120).optional(),
+    }),
     output: z.object({ item: itemSchema }),
   },
   items_remove: {
@@ -126,6 +153,32 @@ export default async function plugin(bb: BbPluginApi) {
       options: ["off", "5", "15", "30", "60"],
       default: "15",
     },
+    presetLow: {
+      type: "string",
+      label: "Worker preset for small, well-defined items (rung: low)",
+      default: "Dial Low",
+    },
+    presetMedium: {
+      type: "string",
+      label: "Worker preset for general items (rung: medium — triage default)",
+      default: "Dial Medium",
+    },
+    presetHigh: {
+      type: "string",
+      label: "Worker preset for hard items (rung: high)",
+      default: "Dial High",
+    },
+    presetUltra: {
+      type: "string",
+      label: "Worker preset for open-ended, cross-cutting items (rung: ultra)",
+      default: "Dial Ultra",
+    },
+    autoTriage: {
+      type: "select",
+      label: "Pick the worker preset automatically from the item title",
+      options: ["on", "off"],
+      default: "on",
+    },
     escalationTimeout: {
       type: "select",
       label: "How long a blocked worker waits on you before proceeding safely",
@@ -171,6 +224,12 @@ export default async function plugin(bb: BbPluginApi) {
     `CREATE INDEX IF NOT EXISTS idx_decisions_item ON decisions(item_id)`,
     `CREATE INDEX IF NOT EXISTS idx_activity_created ON activity(created_at)`,
   ]);
+  // Existing installs predating preset triage get the column added idempotently.
+  try {
+    db.exec(`ALTER TABLE items ADD COLUMN preset TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
   const now = () => new Date().toISOString();
 
@@ -182,6 +241,7 @@ export default async function plugin(bb: BbPluginApi) {
     thread_id: string | null;
     project_id: string | null;
     summary: string | null;
+    preset: string | null;
     nudged_at: string | null;
     created_at: string;
     updated_at: string;
@@ -207,6 +267,7 @@ export default async function plugin(bb: BbPluginApi) {
       threadId: row.thread_id,
       projectId: row.project_id,
       summary: row.summary,
+      preset: row.preset,
       nudgedAt: row.nudged_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -251,9 +312,75 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
+  // --- rung triage + preset resolution -------------------------------------
+
+  function settingForRung(rung: Rung): "presetLow" | "presetMedium" | "presetHigh" | "presetUltra" {
+    switch (rung) {
+      case "low": return "presetLow";
+      case "high": return "presetHigh";
+      case "ultra": return "presetUltra";
+      default: return "presetMedium";
+    }
+  }
+
+  interface PresetConfig {
+    name: string;
+    providerId: string;
+    modelId: string;
+    reasoningLevel: string;
+    serviceTier: string | null;
+    permissionMode: string;
+    environmentKind: string;
+    baseBranch: string | null;
+    instructions: string | null;
+  }
+
+  const execFileP = promisify(execFile);
+
+  /** Resolve a Tasks preset by name via the bb CLI; null when unresolvable. */
+  async function resolvePreset(name: string): Promise<PresetConfig | null> {
+    const bbBin = process.env.BB_CLI || "bb";
+    try {
+      const { stdout } = await execFileP(
+        bbBin,
+        ["tasks", "preset", "show", name, "--json"],
+        { timeout: 15_000, maxBuffer: 1024 * 1024 },
+      );
+      const parsed = JSON.parse(stdout)?.preset;
+      if (!parsed?.providerId || !parsed?.modelId) return null;
+      return {
+        name: parsed.name ?? name,
+        providerId: parsed.providerId,
+        modelId: parsed.modelId,
+        reasoningLevel: parsed.reasoningLevel ?? "medium",
+        serviceTier: parsed.serviceTier ?? null,
+        permissionMode: parsed.permissionMode ?? "full",
+        environmentKind: parsed.environmentKind ?? "project-default",
+        baseBranch: parsed.baseBranch ?? null,
+        instructions: parsed.instructions ?? null,
+      };
+    } catch (cause) {
+      bb.log.warn(`chief-of-staff: preset "${name}" not resolvable: ${String(cause)}`);
+      return null;
+    }
+  }
+
+  /** Rung (from explicit choice or triage) → preset name from settings. */
+  async function presetNameForRung(rung: Rung): Promise<string | null> {
+    const s = await settings.get();
+    const name = (s as Record<string, string | boolean | undefined>)[settingForRung(rung)] as
+      | string
+      | undefined;
+    return name && name.trim() !== "" ? name.trim() : null;
+  }
+
   // --- worker threads ------------------------------------------------------
 
-  function buildPrompt(s: { standingAnswers: string }, item: ItemRow): string {
+  function buildPrompt(
+    s: { standingAnswers: string },
+    item: ItemRow,
+    effort: string | null,
+  ): string {
     const standing = s.standingAnswers.trim().slice(0, 2000);
     return [
       `You are one of several parallel workers coordinated by the Chief-of-Staff plugin.`,
@@ -262,6 +389,9 @@ export default async function plugin(bb: BbPluginApi) {
       item.title,
       item.detail.trim() === "" ? "" : `\n${item.detail.trim()}`,
       ``,
+      effort
+        ? `# Effort profile (how hard to work on this)\n${effort.trim().slice(0, 1200)}`
+        : "",
       `# Working agreement`,
       `1. Work autonomously until the task is complete. Do not stop to chat.`,
       `2. ROUTINE questions — conventions, naming, file placement, style, tooling choices — must go through the \`cos_ask\` tool with kind "routine". The chief of staff answers these for you from the operator's standing instructions; never idle waiting on the operator for these.`,
@@ -279,11 +409,46 @@ export default async function plugin(bb: BbPluginApi) {
   async function spawnWorker(item: ItemRow): Promise<ItemRow> {
     const s = await settings.get();
     const projectId = await resolveProjectId();
+    const preset = item.preset !== null ? await resolvePreset(item.preset) : null;
+    const execution = preset
+      ? {
+          providerId: preset.providerId,
+          model: preset.modelId,
+          reasoningLevel: preset.reasoningLevel as
+            | "none" | "low" | "medium" | "high" | "xhigh" | "ultracode" | "max" | "ultra",
+          permissionMode: preset.permissionMode as "accept-edits" | "auto" | "full",
+          ...(preset.serviceTier === "fast" || preset.serviceTier === "default"
+            ? { serviceTier: preset.serviceTier as "fast" | "default" }
+            : {}),
+          executionInputSources: {
+            providerId: "explicit",
+            model: "explicit",
+            reasoningLevel: "explicit",
+            permissionMode: "explicit",
+            ...(preset.serviceTier === "fast" || preset.serviceTier === "default"
+              ? { serviceTier: "explicit" as const }
+              : {}),
+          },
+        }
+      : {};
+    const environment =
+      preset?.environmentKind === "worktree"
+        ? {
+            type: "host" as const,
+            workspace: {
+              type: "managed-worktree" as const,
+              baseBranch: preset.baseBranch
+                ? ({ kind: "named" as const, name: preset.baseBranch })
+                : ({ kind: "default" as const }),
+            },
+          }
+        : { type: "project-default" as const };
     const thread = await bb.sdk.threads.spawn({
       projectId,
-      environment: { type: "project-default" },
-      prompt: buildPrompt(s, item),
+      environment,
+      prompt: buildPrompt(s, item, preset?.instructions ?? null),
       title: item.title,
+      ...execution,
     });
     db.prepare(
       `UPDATE items SET status='running', thread_id=?, project_id=?, nudged_at=NULL, updated_at=? WHERE id=?`,
@@ -291,7 +456,9 @@ export default async function plugin(bb: BbPluginApi) {
     logActivity(
       item.id,
       "spawned",
-      `Opened worker thread for "${item.title}"`,
+      preset
+        ? `Opened worker for "${item.title}" — ${preset.name} (${preset.providerId}/${preset.modelId} @ ${preset.reasoningLevel})`
+        : `Opened worker thread for "${item.title}"`,
     );
     return getItem(item.id)!;
   }
@@ -570,25 +737,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     brief_get: () => snapshot(),
 
-    items_add: async ({ title }) => {
-      const id = randomUUID().slice(0, 8);
-      db.prepare(
-        `INSERT INTO items (id, title, detail, status, created_at, updated_at) VALUES (?, ?, '', 'queued', ?, ?)`,
-      ).run(id, title, now(), now());
-      let item = getItem(id)!;
-      try {
-        item = await spawnWorker(item);
-      } catch (cause) {
-        db.prepare(`UPDATE items SET status='failed', summary=?, updated_at=? WHERE id=?`).run(
-          `Failed to open a worker: ${String(cause).slice(0, 200)}`,
-          now(),
-          id,
-        );
-        logActivity(id, "failed", `Could not open worker thread: ${String(cause)}`);
-        item = getItem(id)!;
-      }
-      publish();
-      return { item: toItem(item) };
+    items_add: async ({ title, rung, preset }) => {
+      const added = await addItemInternal(title, { rung, preset });
+      return { item: added };
     },
 
     items_remove: async ({ id }) => {
@@ -655,8 +806,9 @@ export default async function plugin(bb: BbPluginApi) {
     "Usage:",
     "  bb chief-of-staff brief                     -- progress briefing + pending decisions",
     "  bb chief-of-staff list                      -- all backlog items",
-    "  bb chief-of-staff add <title>               -- add a backlog item and open its worker",
-    "  bb chief-of-staff retry <item-id>           -- reopen a worker for an item",
+    "  bb chief-of-staff add <title> [--rung low|medium|high|ultra] [--preset <name>]",
+    "                                              -- add an item and open its worker (rungs triage automatically)",
+    "  bb chief-of-staff retry <item-id> [--rung ...|--preset <name>]  -- reopen a worker (optionally at a different rung)",
     "  bb chief-of-staff decide <decision-id> <answer|dismiss> [text]",
     "  bb chief-of-staff remove <item-id>",
   ].join("\n");
@@ -667,8 +819,8 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       { name: "brief", summary: "Progress briefing with pending decisions", usage: "bb chief-of-staff brief" },
       { name: "list", summary: "List backlog items", usage: "bb chief-of-staff list [--json]" },
-      { name: "add", summary: "Add a backlog item and open its worker thread", usage: "bb chief-of-staff add <title>" },
-      { name: "retry", summary: "Reopen a worker thread for an item", usage: "bb chief-of-staff retry <item-id>" },
+      { name: "add", summary: "Add a backlog item and open its worker thread", usage: "bb chief-of-staff add <title> [--rung low|medium|high|ultra] [--preset <name>]" },
+      { name: "retry", summary: "Reopen a worker thread for an item", usage: "bb chief-of-staff retry <item-id> [--rung ...|--preset <name>]" },
       { name: "decide", summary: "Answer or dismiss a pending decision", usage: "bb chief-of-staff decide <decision-id> <answer|dismiss> [text]" },
       { name: "remove", summary: "Remove a backlog item", usage: "bb chief-of-staff remove <item-id>" },
     ],
@@ -696,7 +848,7 @@ export default async function plugin(bb: BbPluginApi) {
               snap.items.length === 0
                 ? "Backlog is empty."
                 : snap.items
-                    .map((i) => `${i.id}  ${i.status.padEnd(7)}  ${i.title}`)
+                    .map((i) => `${i.id}  ${i.status.padEnd(7)}  ${(i.preset ?? "-").padEnd(12)}  ${i.title}`)
                     .join("\n"),
             );
           }
@@ -719,20 +871,28 @@ export default async function plugin(bb: BbPluginApi) {
           return reply({ counts, pendingDecisions: snap.pendingDecisions }, lines.join("\n"));
         }
         case "add": {
-          const title = rest.join(" ").trim();
-          if (title === "") break;
-          const added = await addItemInternal(title);
-          return reply(added, `Added "${added.title}" (${added.status}); worker thread ${added.threadId ?? "not opened"}.`);
+          const parsedAdd = parseRungArgs(rest);
+          if (parsedAdd === null || parsedAdd.text.trim() === "") break;
+          const added = await addItemInternal(parsedAdd.text.trim(), { rung: parsedAdd.rung, preset: parsedAdd.preset });
+          return reply(added, `Added "${added.title}" (${added.status}; preset: ${added.preset ?? "project default"}); worker thread ${added.threadId ?? "not opened"}.`);
         }
         case "retry": {
-          const id = rest[0];
+          const parsedRetry = parseRungArgs(rest);
+          if (parsedRetry === null) break;
+          const id = parsedRetry.text.trim() !== "" ? parsedRetry.text.trim() : undefined;
           if (id === undefined) break;
           const item = getItem(id);
           if (item === undefined) return { exitCode: 1, stderr: `No item ${id}.` };
-          db.prepare(`UPDATE items SET status='queued', summary=NULL, nudged_at=NULL, updated_at=? WHERE id=?`).run(now(), id);
+          let preset = item.preset;
+          if (parsedRetry.preset !== undefined && parsedRetry.preset.trim() !== "") {
+            preset = parsedRetry.preset.trim();
+          } else if (parsedRetry.rung !== undefined) {
+            preset = await presetNameForRung(parsedRetry.rung);
+          }
+          db.prepare(`UPDATE items SET status='queued', summary=NULL, nudged_at=NULL, preset=?, updated_at=? WHERE id=?`).run(preset, now(), id);
           const refreshed = await spawnWorker(getItem(id)!);
           publish();
-          return reply(toItem(refreshed), `Reopened worker for "${refreshed.title}".`);
+          return reply(toItem(refreshed), `Reopened worker for "${refreshed.title}" (preset: ${refreshed.preset ?? "project default"}).`);
         }
         case "decide": {
           const [decisionId, verb, ...textParts] = rest;
@@ -767,12 +927,27 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // The CLI runs inside the same factory scope, so it can reuse internals.
-  async function addItemInternal(title: string) {
+  /** Create an item, triage its rung unless a rung/preset was given, then open its worker. */
+  async function addItemInternal(
+    title: string,
+    options: { rung?: Rung; preset?: string } = {},
+  ) {
+    const s = await settings.get();
+    let presetName: string | null = null;
+    if (options.preset !== undefined && options.preset.trim() !== "") {
+      presetName = options.preset.trim();
+      logActivity(null, "note", `Explicit preset for "${title}": ${presetName}`);
+    } else {
+      const rung = options.rung ?? ((s.autoTriage ?? "on") === "off" ? null : classifyRung(title, ""));
+      if (rung !== null) {
+        presetName = await presetNameForRung(rung);
+        logActivity(null, "note", `Triaged "${title}" as rung ${rung} → preset "${presetName ?? "(none)"}"`);
+      }
+    }
     const id = randomUUID().slice(0, 8);
     db.prepare(
-      `INSERT INTO items (id, title, detail, status, created_at, updated_at) VALUES (?, ?, '', 'queued', ?, ?)`,
-    ).run(id, title, now(), now());
+      `INSERT INTO items (id, title, detail, status, preset, created_at, updated_at) VALUES (?, ?, '', 'queued', ?, ?, ?)`,
+    ).run(id, title, presetName, now(), now());
     let item = getItem(id)!;
     try {
       item = await spawnWorker(item);
@@ -788,6 +963,36 @@ export default async function plugin(bb: BbPluginApi) {
     return toItem(item);
   }
 
+  function parseRungArgs(args: string[]): { text: string; rung?: Rung; preset?: string } | null {
+    let rung: Rung | undefined;
+    let preset: string | undefined;
+    const text: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "--rung") {
+        const value = args[++i];
+        if (value === undefined || !RUNG_VALUES.includes(value as Rung)) return null;
+        rung = value as Rung;
+      } else if (arg.startsWith("--rung=")) {
+        const value = arg.slice("--rung=".length);
+        if (!RUNG_VALUES.includes(value as Rung)) return null;
+        rung = value as Rung;
+      } else if (arg === "--preset") {
+        const value = args[++i];
+        if (value === undefined || value.trim() === "") return null;
+        preset = value.trim();
+      } else if (arg.startsWith("--preset=")) {
+        const value = arg.slice("--preset=".length).trim();
+        if (value === "") return null;
+        preset = value;
+      } else {
+        text.push(arg);
+      }
+    }
+    return { text: text.join(" "), rung, preset };
+  }
+
+  // The CLI runs inside the same factory scope, so it can reuse internals.
   bb.onDispose(() => {
     bb.log.info("chief-of-staff disposed");
   });
